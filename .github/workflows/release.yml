@@ -62,19 +62,22 @@ jobs:
 
   publish-npm:
     needs: publish-release
-    if: ${{ secrets.NPM_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
+        if: ${{ secrets.NPM_TOKEN != '' }}
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
       - name: Set package version from tag
+        if: ${{ secrets.NPM_TOKEN != '' }}
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
 
-      - run: npm publish --access public
+      - name: Publish to npm
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
