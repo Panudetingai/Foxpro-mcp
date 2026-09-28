@@ -1,0 +1,20 @@
+# Node Modules & Build Outputs
+target/
+node_modules/
+dist
+build/
+coverage/
+logs/
+tmp/
+cache/
+temp/
+backup/
+
+# Cargo
+/Cargo.lock
+/Cargo.toml
+/Cargo.lock
+
+# Rust
+.mcp-backup
+*.prg
