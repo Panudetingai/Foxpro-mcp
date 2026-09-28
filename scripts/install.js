@@ -16,6 +16,7 @@ const REPO = "Panudetingai/Foxpro-mcp";
 const pkg = require(path.join(PACKAGE_ROOT, "package.json"));
 
 function log(msg) {
+  // stdout is the MCP stdio channel — never write logs there.
   console.error(`[foxpro-mcp] ${msg}`);
 }
 
@@ -51,83 +52,67 @@ function tryUseLocalDevBinary(destPath, fileName) {
   return true;
 }
 
-function fetchJson(url) {
+function downloadFile(url, destPath, redirects = 0) {
   return new Promise((resolve, reject) => {
+    if (redirects > 10) {
+      reject(new Error(`Too many redirects: ${url}`));
+      return;
+    }
     https
       .get(url, { headers: { "User-Agent": "foxpro-mcp-installer" } }, (res) => {
-        if (res.statusCode === 302 || res.statusCode === 301) {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+          res.resume();
           const loc = res.headers.location;
           if (!loc) {
             reject(new Error(`Redirect without location: ${url}`));
             return;
           }
-          fetchJson(loc).then(resolve, reject);
+          downloadFile(new URL(loc, url).toString(), destPath, redirects + 1).then(
+            resolve,
+            reject,
+          );
           return;
         }
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          const body = Buffer.concat(chunks).toString("utf8");
-          if (res.statusCode !== 200) {
-            reject(new Error(`HTTP ${res.statusCode} for ${url}: ${body.slice(0, 200)}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(body));
-          } catch (e) {
-            reject(e);
-          }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
+          return;
+        }
+        const file = fs.createWriteStream(destPath);
+        res.pipe(file);
+        file.on("finish", () => file.close(resolve));
+        file.on("error", (err) => {
+          fs.unlink(destPath, () => {});
+          reject(err);
+        });
+        res.on("error", (err) => {
+          file.close();
+          fs.unlink(destPath, () => {});
+          reject(err);
         });
       })
       .on("error", reject);
   });
 }
 
-function downloadFile(url, destPath) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    https
-      .get(url, { headers: { "User-Agent": "foxpro-mcp-installer" } }, (res) => {
-        if (res.statusCode === 302 || res.statusCode === 301) {
-          const loc = res.headers.location;
-          file.close();
-          fs.unlink(destPath, () => {});
-          if (!loc) {
-            reject(new Error(`Redirect without location: ${url}`));
-            return;
-          }
-          downloadFile(loc, destPath).then(resolve, reject);
-          return;
-        }
-        if (res.statusCode !== 200) {
-          file.close();
-          fs.unlink(destPath, () => {});
-          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
-          return;
-        }
-        res.pipe(file);
-        file.on("finish", () => file.close(resolve));
-      })
-      .on("error", (err) => {
-        file.close();
-        fs.unlink(destPath, () => {});
-        reject(err);
-      });
-  });
-}
-
 async function downloadFromGitHubRelease(destPath, fileName) {
   const tag = `v${pkg.version}`;
-  const apiUrl = `https://api.github.com/repos/${REPO}/releases/tags/${tag}`;
-  const release = await fetchJson(apiUrl);
-  const asset = release.assets?.find((a) => a.name === fileName);
-  if (!asset) {
-    throw new Error(
-      `Release ${tag} has no asset "${fileName}". Publish a GitHub release first.`,
-    );
-  }
+  // Direct asset URL — avoids the unauthenticated GitHub API rate limit (60 req/h).
+  const url = `https://github.com/${REPO}/releases/download/${tag}/${fileName}`;
   log(`Downloading ${fileName} from ${tag}…`);
-  await downloadFile(asset.browser_download_url, destPath);
+
+  // Download to a temp file and rename, so an interrupted download never
+  // leaves a truncated exe that the launcher would try to run.
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  const tmpPath = `${destPath}.${process.pid}.download`;
+  try {
+    await downloadFile(url, tmpPath);
+    fs.renameSync(tmpPath, destPath);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
+
   writeMarker({
     version: pkg.version,
     fileName,
@@ -137,17 +122,14 @@ async function downloadFromGitHubRelease(destPath, fileName) {
   });
 }
 
-async function main() {
-  if (process.env.FOXPRO_MCP_SKIP_DOWNLOAD === "1") {
-    log("FOXPRO_MCP_SKIP_DOWNLOAD=1 — skipping binary download.");
-    return;
-  }
-
+/**
+ * Makes sure the native binary for this platform is in vendor/.
+ * @returns {Promise<string | null>} path to the binary, or null if unavailable
+ */
+async function ensureBinary() {
   if (!isSupportedPlatform()) {
-    log(
-      "Skipping binary download: foxpro-mcp runs on Windows only (win32 x64/arm64).",
-    );
-    return;
+    log("Skipping binary download: foxpro-mcp runs on Windows only (win32 x64/arm64).");
+    return null;
   }
 
   const fileName = getBinaryFileName();
@@ -159,8 +141,7 @@ async function main() {
     marker?.fileName === fileName &&
     fs.existsSync(destPath)
   ) {
-    log(`Binary already installed (${fileName}).`);
-    return;
+    return destPath;
   }
 
   if (process.env.FOXPRO_MCP_BIN && fs.existsSync(process.env.FOXPRO_MCP_BIN)) {
@@ -172,26 +153,43 @@ async function main() {
       source: "env",
       installedAt: new Date().toISOString(),
     });
-    return;
+    return destPath;
   }
 
   try {
     await downloadFromGitHubRelease(destPath, fileName);
     log("Install complete.");
+    return destPath;
   } catch (err) {
     if (tryUseLocalDevBinary(destPath, fileName)) {
       log("Install complete (local dev binary).");
-      return;
+      return destPath;
     }
     log(`Could not download binary: ${err.message}`);
     log(
       "Build locally with `cargo build --release`, set FOXPRO_MCP_BIN, or publish GitHub release assets.",
     );
-    log("The `foxpro-mcp` command will not work until a binary is available.");
+    return null;
   }
 }
 
-main().catch((err) => {
-  log(err.stack || String(err));
-  process.exit(0);
-});
+async function main() {
+  if (process.env.FOXPRO_MCP_SKIP_DOWNLOAD === "1") {
+    log("FOXPRO_MCP_SKIP_DOWNLOAD=1 — skipping binary download.");
+    return;
+  }
+  const binary = await ensureBinary();
+  if (!binary) {
+    log("The binary will be downloaded again the first time `foxpro-mcp` runs.");
+  }
+}
+
+module.exports = { ensureBinary };
+
+if (require.main === module) {
+  // Never fail `npm install` — the launcher retries the download on first run.
+  main().catch((err) => {
+    log(err.stack || String(err));
+    process.exit(0);
+  });
+}

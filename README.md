@@ -32,7 +32,7 @@ npm install foxpro-mcp
 npx foxpro-mcp --help
 ```
 
-ตอน `npm install` จะดาวน์โหลด `foxpro-mcp.exe` ที่ build แล้วจาก [GitHub Releases](https://github.com/Panudetingai/Foxpro-mcp/releases) อัตโนมัติ
+ตอน `npm install` (หรือตอนรันครั้งแรก) จะดาวน์โหลด `foxpro-mcp.exe` ที่ build แล้วจาก [GitHub Releases](https://github.com/Panudetingai/Foxpro-mcp/releases) อัตโนมัติ
 
 ## ตั้งค่า MCP (ตัวอย่าง)
 
@@ -47,7 +47,45 @@ npx foxpro-mcp --help
 }
 ```
 
-**Cursor / Claude Desktop** (stdio):
+> ใช้ path แบบ absolute กับ `--config` เสมอ — MCP client แต่ละตัวเปิด server จาก working directory ต่างกัน
+
+**แบบ `npx` (แนะนำ — ไม่ต้องติดตั้งก่อน)**
+
+Claude Desktop / Cursor / Windsurf:
+
+```json
+{
+  "mcpServers": {
+    "foxpro": {
+      "command": "npx",
+      "args": ["-y", "foxpro-mcp@latest", "--config", "C:/path/to/your/project/foxpro-mcp.json"]
+    }
+  }
+}
+```
+
+ถ้า client ขึ้น error ว่าหา `npx` ไม่เจอ (`spawn npx ENOENT`) บน Windows ให้ครอบด้วย `cmd /c`:
+
+```json
+{
+  "mcpServers": {
+    "foxpro": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "foxpro-mcp@latest", "--config", "C:/path/to/your/project/foxpro-mcp.json"]
+    }
+  }
+}
+```
+
+Claude Code (Windows native ต้องใช้ `cmd /c` เสมอ):
+
+```bash
+claude mcp add foxpro -- cmd /c npx -y foxpro-mcp@latest --config C:/path/to/your/project/foxpro-mcp.json
+```
+
+ครั้งแรกที่รันจะดาวน์โหลด `foxpro-mcp.exe` (~6 MB) อาจใช้เวลาสักครู่ ครั้งต่อไปใช้จาก cache
+
+**แบบติดตั้ง global** (`npm install -g foxpro-mcp`) — เริ่มเร็วกว่า ไม่ต้องรอ npx:
 
 ```json
 {
@@ -60,18 +98,7 @@ npx foxpro-mcp --help
 }
 ```
 
-ถ้าไม่ได้ติดตั้ง global:
-
-```json
-{
-  "mcpServers": {
-    "foxpro": {
-      "command": "npx",
-      "args": ["-y", "foxpro-mcp", "--config", "C:/path/to/your/project/foxpro-mcp.json"]
-    }
-  }
-}
-```
+> ใช้ pnpm / bun / `--ignore-scripts` ได้ — ถ้า postinstall ไม่ได้รัน `foxpro-mcp` จะดาวน์โหลด binary ให้เองตอนเปิดครั้งแรก
 
 ## CLI
 
