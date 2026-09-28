@@ -42,7 +42,11 @@ pub struct PatchResult {
 }
 
 /// Read and decode a file. Optionally return only lines [start_line, end_line] (1-based, inclusive).
-pub fn read_file(path: &Path, start_line: Option<usize>, end_line: Option<usize>) -> Result<FileContent> {
+pub fn read_file(
+    path: &Path,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<FileContent> {
     let bytes = fs::read(path)?;
     let (encoding, text) = decode_bytes(&bytes, None);
 
@@ -75,7 +79,11 @@ pub fn write_file(
     options: WriteOptions,
     backup_fn: &dyn Fn(&Path, &Path) -> Result<Option<PathBuf>>,
 ) -> Result<WriteResult> {
-    let original_bytes = if path.exists() { Some(fs::read(path)?) } else { None };
+    let original_bytes = if path.exists() {
+        Some(fs::read(path)?)
+    } else {
+        None
+    };
     let (old_encoding, old_text) = original_bytes
         .as_ref()
         .map(|b| decode_bytes(b, options.encoding.as_deref()))
@@ -83,7 +91,10 @@ pub fn write_file(
         .unwrap_or((None, String::new()));
 
     let diff = make_diff(&old_text, content);
-    let encoding = options.encoding.or(old_encoding).unwrap_or_else(|| "utf-8".to_string());
+    let encoding = options
+        .encoding
+        .or(old_encoding)
+        .unwrap_or_else(|| "utf-8".to_string());
 
     if options.dry_run {
         return Ok(WriteResult {
@@ -141,7 +152,11 @@ pub fn apply_patch(
         });
     }
 
-    let backup_path = if backup { backup_fn(path, workspace)? } else { None };
+    let backup_path = if backup {
+        backup_fn(path, workspace)?
+    } else {
+        None
+    };
     let bytes = encode_string(&replaced, &content.encoding)?;
     fs::write(path, &bytes)?;
 
@@ -188,7 +203,11 @@ pub fn search_files(
         }
 
         if let Some(ext) = file_type {
-            let file_ext = entry.path().extension().and_then(|e| e.to_str()).unwrap_or("");
+            let file_ext = entry
+                .path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
             if file_ext != ext {
                 continue;
             }
@@ -223,7 +242,7 @@ fn make_diff(old: &str, new: &str) -> String {
     diff.unified_diff().context_radius(3).to_string()
 }
 
-fn decode_bytes(bytes: &[u8], preferred: Option<&str>) -> (String, String) {
+pub fn decode_bytes(bytes: &[u8], preferred: Option<&str>) -> (String, String) {
     if let Some(label) = preferred {
         if let Some(enc) = encoding_rs::Encoding::for_label(label.as_bytes()) {
             let (text, _) = enc.decode_without_bom_handling(bytes);
@@ -257,7 +276,7 @@ fn decode_bytes(bytes: &[u8], preferred: Option<&str>) -> (String, String) {
     (label.to_string(), text.into_owned())
 }
 
-fn encode_string(text: &str, encoding: &str) -> Result<Vec<u8>> {
+pub fn encode_string(text: &str, encoding: &str) -> Result<Vec<u8>> {
     let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
         .ok_or_else(|| FoxProError::Config(format!("Unsupported encoding: {encoding}")))?;
     let (bytes, _, _) = enc.encode(text);

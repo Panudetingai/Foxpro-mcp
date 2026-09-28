@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod mcp;
 mod sandbox;
+mod vfp;
 
 use clap::Parser;
 use cli::Args;
@@ -15,7 +16,13 @@ use mcp::Server;
 async fn main() {
     let args = Args::parse();
 
-    let config = match Config::load(args.config, args.workspace, args.log_level) {
+    let config = match Config::load(
+        args.config,
+        args.workspace,
+        args.log_level,
+        args.vfp_path,
+        args.vfp_timeout,
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to load configuration: {e}");

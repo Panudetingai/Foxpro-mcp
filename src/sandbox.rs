@@ -101,7 +101,11 @@ mod tests {
     fn rejects_paths_outside_workspace() {
         let dir = TempDir::new().unwrap();
         let sandbox = Sandbox::new(Sandbox::canonicalize(dir.path()).unwrap());
-        let outside = dir.path().parent().unwrap().join("foxpro-mcp-outside-test.txt");
+        let outside = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("foxpro-mcp-outside-test.txt");
         fs::File::create(&outside).unwrap();
 
         let err = sandbox.validate(&outside).unwrap_err();
@@ -113,10 +117,16 @@ mod tests {
     fn rejects_traversal_attempts() {
         let dir = TempDir::new().unwrap();
         let sandbox = Sandbox::new(Sandbox::canonicalize(dir.path()).unwrap());
-        let outside = dir.path().parent().unwrap().join("foxpro-mcp-traversal-test.txt");
+        let outside = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("foxpro-mcp-traversal-test.txt");
         fs::File::create(&outside).unwrap();
 
-        let err = sandbox.validate(Path::new("../foxpro-mcp-traversal-test.txt")).unwrap_err();
+        let err = sandbox
+            .validate(Path::new("../foxpro-mcp-traversal-test.txt"))
+            .unwrap_err();
         fs::remove_file(&outside).ok();
         assert!(matches!(err, FoxProError::SandboxViolation { .. }));
     }

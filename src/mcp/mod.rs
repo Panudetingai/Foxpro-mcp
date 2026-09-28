@@ -4,19 +4,36 @@ mod tools;
 use crate::config::Config;
 use crate::error::Result;
 use crate::sandbox::Sandbox;
-use protocol::{error_response, Request, Response};
-use serde_json::{json, Value};
+use crate::vfp::VfpEngine;
+use protocol::{Request, Response, error_response};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 pub struct Server {
     sandbox: Sandbox,
     config: Config,
+    vfp_engine: Option<VfpEngine>,
 }
 
 impl Server {
     pub fn new(config: Config) -> Result<Self> {
         let sandbox = Sandbox::new(config.workspace.clone());
-        Ok(Self { sandbox, config })
+        let vfp_engine = match VfpEngine::new(
+            config.vfp_path.clone(),
+            config.workspace.clone(),
+            config.vfp_timeout,
+        ) {
+            Ok(engine) => Some(engine),
+            Err(e) => {
+                tracing::warn!("VFP runtime not available: {e}");
+                None
+            }
+        };
+        Ok(Self {
+            sandbox,
+            config,
+            vfp_engine,
+        })
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -66,7 +83,7 @@ impl Server {
                 None
             }
             "tools/list" => Some(self.tools_list(&request)),
-            "tools/call" => Some(self.tools_call(&request)),
+            "tools/call" => Some(self.tools_call(&request).await),
             "prompts/list" => Some(self.list_named(&request, "prompts", json!([]))),
             "prompts/get" => Some(self.not_found(&request, "Unknown prompt")),
             "resources/list" => Some(self.list_named(&request, "resources", json!([]))),
@@ -128,11 +145,7 @@ impl Server {
     }
 
     fn not_found(&self, request: &Request, message: &str) -> Response {
-        error_response(
-            request.id.clone(),
-            -32602,
-            message.to_string(),
-        )
+        error_response(request.id.clone(), -32602, message.to_string())
     }
 
     fn shutdown(&self, request: &Request) -> Response {
@@ -153,7 +166,7 @@ impl Server {
         }
     }
 
-    fn tools_call(&self, request: &Request) -> Response {
+    async fn tools_call(&self, request: &Request) -> Response {
         let params = match &request.params {
             Some(Value::Object(map)) => map,
             _ => {
@@ -180,9 +193,10 @@ impl Server {
         let ctx = tools::ToolContext {
             config: &self.config,
             sandbox: &self.sandbox,
+            vfp_engine: self.vfp_engine.as_ref(),
         };
 
-        match tools::call(name, arguments, ctx) {
+        match tools::call(name, arguments, ctx).await {
             Ok(value) => Response {
                 jsonrpc: "2.0".to_string(),
                 id: request.id.clone(),
@@ -237,6 +251,8 @@ mod tests {
         let config = Config {
             workspace: dir,
             log_level: "error".to_string(),
+            vfp_path: None,
+            vfp_timeout: 30,
         };
         Server::new(config).unwrap()
     }

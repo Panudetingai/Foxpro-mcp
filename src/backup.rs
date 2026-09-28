@@ -8,10 +8,12 @@ pub fn create(workspace: &Path, original: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
 
-    let rel = original.strip_prefix(workspace).map_err(|_| FoxProError::SandboxViolation {
-        workspace: workspace.to_path_buf(),
-        requested: original.to_path_buf(),
-    })?;
+    let rel = original
+        .strip_prefix(workspace)
+        .map_err(|_| FoxProError::SandboxViolation {
+            workspace: workspace.to_path_buf(),
+            requested: original.to_path_buf(),
+        })?;
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let backup_dir = workspace
@@ -33,10 +35,12 @@ pub fn create(workspace: &Path, original: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub fn list(workspace: &Path, original: &Path) -> Result<Vec<PathBuf>> {
-    let rel = original.strip_prefix(workspace).map_err(|_| FoxProError::SandboxViolation {
-        workspace: workspace.to_path_buf(),
-        requested: original.to_path_buf(),
-    })?;
+    let rel = original
+        .strip_prefix(workspace)
+        .map_err(|_| FoxProError::SandboxViolation {
+            workspace: workspace.to_path_buf(),
+            requested: original.to_path_buf(),
+        })?;
     let backup_dir = workspace
         .join(".mcp-backup")
         .join(rel.parent().unwrap_or(Path::new("")));

@@ -20,9 +20,14 @@ pub enum FoxProError {
     PathNotFound(PathBuf),
 
     #[error("Sandbox violation: requested path '{requested}' is outside workspace '{workspace}'")]
-    SandboxViolation { workspace: PathBuf, requested: PathBuf },
+    SandboxViolation {
+        workspace: PathBuf,
+        requested: PathBuf,
+    },
 
-    #[error("Missing workspace: specify --workspace, FOXPRO_WORKSPACE, or workspace in foxpro-mcp.json")]
+    #[error(
+        "Missing workspace: specify --workspace, FOXPRO_WORKSPACE, or workspace in foxpro-mcp.json"
+    )]
     MissingWorkspace,
 
     #[error("Invalid RPC request: {0}")]
@@ -30,6 +35,12 @@ pub enum FoxProError {
 
     #[error("Directory traversal error: {0}")]
     WalkDir(#[from] walkdir::Error),
+
+    #[error("VFP runtime not found or not configured: {0}")]
+    VfpNotConfigured(String),
+
+    #[error("Operation timed out after {0} seconds")]
+    Timeout(u64),
 }
 
 pub type Result<T> = std::result::Result<T, FoxProError>;

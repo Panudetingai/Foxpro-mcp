@@ -4,8 +4,9 @@ use crate::code::{FileContent, PatchResult, WriteOptions, WriteResult};
 use crate::config::Config;
 use crate::error::{FoxProError, Result};
 use crate::sandbox::Sandbox;
+use crate::vfp::{BuildOutput, BuildType, RunOutput, VfpEngine};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 #[derive(Debug, Serialize)]
@@ -25,17 +26,23 @@ pub fn all() -> Vec<Tool> {
         search_code(),
         apply_patch(),
         rollback(),
+        run(),
+        build(),
+        test(),
     ]
 }
 
 pub struct ToolContext<'a> {
     pub config: &'a Config,
     pub sandbox: &'a Sandbox,
+    pub vfp_engine: Option<&'a VfpEngine>,
 }
 
-pub fn call(name: &str, arguments: Option<&Value>, ctx: ToolContext<'_>) -> Result<Value> {
+pub async fn call(name: &str, arguments: Option<&Value>, ctx: ToolContext<'_>) -> Result<Value> {
     let args = arguments.ok_or_else(|| FoxProError::Rpc("missing arguments".to_string()))?;
-    let args = args.as_object().ok_or_else(|| FoxProError::Rpc("arguments must be an object".to_string()))?;
+    let args = args
+        .as_object()
+        .ok_or_else(|| FoxProError::Rpc("arguments must be an object".to_string()))?;
 
     match name {
         "foxpro.status" => status_handler(ctx),
@@ -45,6 +52,9 @@ pub fn call(name: &str, arguments: Option<&Value>, ctx: ToolContext<'_>) -> Resu
         "foxpro.search_code" => search_code_handler(args, ctx),
         "foxpro.apply_patch" => apply_patch_handler(args, ctx),
         "foxpro.rollback" => rollback_handler(args, ctx),
+        "foxpro.run" => run_handler(args, ctx).await,
+        "foxpro.build" => build_handler(args, ctx).await,
+        "foxpro.test" => test_handler(args, ctx).await,
         _ => Err(FoxProError::Rpc(format!("Unknown tool: {name}"))),
     }
 }
@@ -73,7 +83,10 @@ fn read_code_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'_>
     Ok(file_content_value(fc))
 }
 
-fn write_code_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'_>) -> Result<Value> {
+fn write_code_handler(
+    args: &serde_json::Map<String, Value>,
+    ctx: ToolContext<'_>,
+) -> Result<Value> {
     let raw_path = required_str(args, "path")?;
     let path = ctx.sandbox.resolve(Path::new(raw_path))?;
     let content = required_str(args, "content")?;
@@ -93,11 +106,17 @@ fn write_code_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'_
     Ok(write_result_value(result))
 }
 
-fn search_code_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'_>) -> Result<Value> {
+fn search_code_handler(
+    args: &serde_json::Map<String, Value>,
+    ctx: ToolContext<'_>,
+) -> Result<Value> {
     let raw_path = get_str(args, "path").unwrap_or(".");
     let search_root = ctx.sandbox.validate(Path::new(raw_path))?;
     if !search_root.is_dir() {
-        return Err(FoxProError::Config(format!("{} is not a directory", search_root.display())));
+        return Err(FoxProError::Config(format!(
+            "{} is not a directory",
+            search_root.display()
+        )));
     }
 
     let pattern = required_str(args, "pattern")?;
@@ -114,18 +133,23 @@ fn search_code_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'
         file_type,
         max_results,
     )?;
-    Ok(json!(matches
-        .iter()
-        .map(|m| json!({
-            "file": m.file.to_string_lossy(),
-            "line": m.line,
-            "column": m.column,
-            "text": m.text,
-        }))
-        .collect::<Vec<_>>()))
+    Ok(json!(
+        matches
+            .iter()
+            .map(|m| json!({
+                "file": m.file.to_string_lossy(),
+                "line": m.line,
+                "column": m.column,
+                "text": m.text,
+            }))
+            .collect::<Vec<_>>()
+    ))
 }
 
-fn apply_patch_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'_>) -> Result<Value> {
+fn apply_patch_handler(
+    args: &serde_json::Map<String, Value>,
+    ctx: ToolContext<'_>,
+) -> Result<Value> {
     let raw_path = required_str(args, "path")?;
     let path = ctx.sandbox.validate(Path::new(raw_path))?;
     let old_text = required_str(args, "old_text")?;
@@ -181,6 +205,123 @@ fn patch_result_value(result: PatchResult) -> Value {
         "backup_path": result.backup_path.map(|p| p.to_string_lossy().into_owned()),
         "diff": result.diff,
     })
+}
+
+fn run_output_value(result: RunOutput) -> Value {
+    json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "captured_output": result.captured_output,
+        "output_file": result.output_file.to_string_lossy(),
+        "command": result.command,
+    })
+}
+
+fn build_output_value(result: BuildOutput) -> Value {
+    json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "errors": result.errors,
+        "output_file": result.output_file.to_string_lossy(),
+        "command": result.command,
+        "dry_run": result.dry_run,
+    })
+}
+
+fn require_vfp_engine<'a>(ctx: &'a ToolContext<'a>) -> Result<&'a VfpEngine> {
+    ctx.vfp_engine
+        .ok_or_else(|| FoxProError::VfpNotConfigured("Set --vfp-path or FOXPRO_PATH".to_string()))
+}
+
+async fn run_handler(args: &serde_json::Map<String, Value>, ctx: ToolContext<'_>) -> Result<Value> {
+    let engine = require_vfp_engine(&ctx)?;
+    let path_arg = get_str(args, "path");
+    let code_arg = get_str(args, "code");
+    let timeout = get_usize(args, "timeout").map(|n| n as u64);
+    let dry_run = get_bool(args, "dry_run").unwrap_or(false);
+
+    if path_arg.is_none() && code_arg.is_none() {
+        return Err(FoxProError::Rpc(
+            "One of 'path' or 'code' is required".to_string(),
+        ));
+    }
+
+    let output = if let Some(raw) = path_arg {
+        let path = ctx.sandbox.validate(Path::new(raw))?;
+        engine.run_file(&path, timeout, dry_run).await?
+    } else {
+        engine.run_code(code_arg.unwrap(), timeout, dry_run).await?
+    };
+
+    Ok(run_output_value(output))
+}
+
+async fn build_handler(
+    args: &serde_json::Map<String, Value>,
+    ctx: ToolContext<'_>,
+) -> Result<Value> {
+    let engine = require_vfp_engine(&ctx)?;
+    let raw_project = required_str(args, "project")?;
+    let project = ctx.sandbox.validate(Path::new(raw_project))?;
+
+    let build_type = match get_str(args, "type").unwrap_or("exe") {
+        "exe" => BuildType::Exe,
+        "app" => BuildType::App,
+        "dll" => BuildType::Dll,
+        t => return Err(FoxProError::Rpc(format!("Unsupported build type: {t}"))),
+    };
+
+    let output = get_str(args, "output").map(Path::new);
+    let output_path = output.map(|p| ctx.sandbox.resolve(p)).transpose()?;
+    let timeout = get_usize(args, "timeout").map(|n| n as u64);
+    let dry_run = get_bool(args, "dry_run").unwrap_or(false);
+
+    let result = engine
+        .build(
+            &project,
+            build_type,
+            output_path.as_deref(),
+            timeout,
+            dry_run,
+        )
+        .await?;
+    Ok(build_output_value(result))
+}
+
+async fn test_handler(
+    args: &serde_json::Map<String, Value>,
+    ctx: ToolContext<'_>,
+) -> Result<Value> {
+    let engine = require_vfp_engine(&ctx)?;
+    let raw_project = required_str(args, "project")?;
+    let project = ctx.sandbox.validate(Path::new(raw_project))?;
+    let raw_test = required_str(args, "test")?;
+    let test_path = ctx.sandbox.validate(Path::new(raw_test))?;
+
+    let output = get_str(args, "output").map(Path::new);
+    let output_path = output.map(|p| ctx.sandbox.resolve(p)).transpose()?;
+    let timeout = get_usize(args, "timeout").map(|n| n as u64);
+    let dry_run = get_bool(args, "dry_run").unwrap_or(false);
+
+    let build_result = engine
+        .build(
+            &project,
+            BuildType::Exe,
+            output_path.as_deref(),
+            timeout,
+            dry_run,
+        )
+        .await?;
+    let run_result = engine.run_file(&test_path, timeout, dry_run).await?;
+
+    Ok(json!({
+        "build": build_output_value(build_result),
+        "run": run_output_value(run_result),
+    }))
 }
 
 // Tool metadata -----------------------------------------------------------
@@ -288,6 +429,59 @@ fn rollback() -> Tool {
     }
 }
 
+fn run() -> Tool {
+    Tool {
+        name: "foxpro.run",
+        description: "Execute a FoxPro .prg file or inline FoxPro code through the configured VFP9 runtime. Captures screen output and supports timeout and dry-run.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Relative or absolute path to a .prg inside the workspace" },
+                "code": { "type": "string", "description": "Inline FoxPro source code to run" },
+                "timeout": { "type": "integer", "description": "Timeout in seconds" },
+                "dry_run": { "type": "boolean", "description": "Return the generated runner script without executing VFP" }
+            },
+            "required": []
+        }),
+    }
+}
+
+fn build() -> Tool {
+    Tool {
+        name: "foxpro.build",
+        description: "Build a Visual FoxPro project (.pjx) into an EXE, APP or DLL. Parses build errors into structured JSON and supports dry-run.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string", "description": "Path to the .pjx project file" },
+                "type": { "type": "string", "enum": ["exe", "app", "dll"], "description": "Build output type" },
+                "output": { "type": "string", "description": "Output executable path" },
+                "timeout": { "type": "integer", "description": "Timeout in seconds" },
+                "dry_run": { "type": "boolean", "description": "Return the generated build script without executing VFP" }
+            },
+            "required": ["project"]
+        }),
+    }
+}
+
+fn test() -> Tool {
+    Tool {
+        name: "foxpro.test",
+        description: "Build a VFP project and then run a test .prg. Returns both build and run results.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string", "description": "Path to the .pjx project file" },
+                "test": { "type": "string", "description": "Path to the test .prg" },
+                "output": { "type": "string", "description": "Output executable path" },
+                "timeout": { "type": "integer", "description": "Timeout in seconds" },
+                "dry_run": { "type": "boolean", "description": "Return generated scripts without executing VFP" }
+            },
+            "required": ["project", "test"]
+        }),
+    }
+}
+
 fn empty_schema() -> Value {
     json!({
         "type": "object",
@@ -320,7 +514,11 @@ mod tests {
     use std::path::PathBuf;
 
     fn ctx<'a>(config: &'a Config, sandbox: &'a Sandbox) -> ToolContext<'a> {
-        ToolContext { config, sandbox }
+        ToolContext {
+            config,
+            sandbox,
+            vfp_engine: None,
+        }
     }
 
     #[test]
@@ -330,24 +528,38 @@ mod tests {
         assert!(value.get("input_schema").is_none());
     }
 
-    #[test]
-    fn status_returns_version() {
+    #[tokio::test]
+    async fn status_returns_version() {
         let config = Config {
             workspace: PathBuf::from("."),
             log_level: "info".to_string(),
+            vfp_path: None,
+            vfp_timeout: 30,
         };
         let sandbox = Sandbox::new(PathBuf::from("."));
-        let result = call("foxpro.status", Some(&json!({})), ctx(&config, &sandbox)).unwrap();
+        let result = call("foxpro.status", Some(&json!({})), ctx(&config, &sandbox))
+            .await
+            .unwrap();
         assert_eq!(result["version"], env!("CARGO_PKG_VERSION"));
     }
 
-    #[test]
-    fn unknown_tool_errors() {
+    #[tokio::test]
+    async fn unknown_tool_errors() {
         let config = Config {
             workspace: PathBuf::from("."),
             log_level: "info".to_string(),
+            vfp_path: None,
+            vfp_timeout: 30,
         };
         let sandbox = Sandbox::new(PathBuf::from("."));
-        assert!(call("foxpro.does_not_exist", Some(&json!({})), ctx(&config, &sandbox)).is_err());
+        assert!(
+            call(
+                "foxpro.does_not_exist",
+                Some(&json!({})),
+                ctx(&config, &sandbox)
+            )
+            .await
+            .is_err()
+        );
     }
 }
