@@ -12,8 +12,6 @@ backup/
 
 # Cargo
 /Cargo.lock
-/Cargo.toml
-/Cargo.lock
 
 # Rust
 .mcp-backup
