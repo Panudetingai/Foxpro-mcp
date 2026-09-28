@@ -1,18 +1,11 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
-
-#[derive(Debug, Deserialize)]
-pub struct Request {
-    pub jsonrpc: String,
-    pub id: Option<Value>,
-    pub method: String,
-    #[serde(default)]
-    pub params: Option<Value>,
-}
 
 #[derive(Debug, Serialize)]
 pub struct Response {
-    pub jsonrpc: String,
+    pub jsonrpc: &'static str,
+    /// Always serialized: JSON-RPC requires `"id": null` when the request id
+    /// could not be determined (e.g. parse errors).
     pub id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
@@ -28,9 +21,18 @@ pub struct RpcError {
     pub data: Option<Value>,
 }
 
+pub fn success_response(id: Option<Value>, result: Value) -> Response {
+    Response {
+        jsonrpc: "2.0",
+        id,
+        result: Some(result),
+        error: None,
+    }
+}
+
 pub fn error_response(id: Option<Value>, code: i32, message: impl Into<String>) -> Response {
     Response {
-        jsonrpc: "2.0".to_string(),
+        jsonrpc: "2.0",
         id,
         result: None,
         error: Some(RpcError {

@@ -10,9 +10,7 @@ cache/
 temp/
 backup/
 
-# Cargo
-/Cargo.lock
-
 # Rust
 .mcp-backup
+.mcp-vfp
 *.prg

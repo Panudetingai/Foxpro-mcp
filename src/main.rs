@@ -2,9 +2,18 @@ mod backup;
 mod cli;
 mod code;
 mod config;
+mod db;
+mod dbf;
+mod designer;
+mod encoding;
 mod error;
+mod form;
+mod fsutil;
 mod mcp;
+mod meta;
+mod report;
 mod sandbox;
+mod ui;
 mod vfp;
 
 use clap::Parser;

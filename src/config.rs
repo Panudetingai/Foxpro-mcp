@@ -1,10 +1,10 @@
 use crate::error::{FoxProError, Result};
 use crate::sandbox::Sandbox;
-use crate::vfp::DEFAULT_TIMEOUT_SECS;
+use crate::vfp::{DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS};
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -22,6 +22,13 @@ struct ConfigFile {
     vfp_timeout: Option<u64>,
 }
 
+/// Relative paths in a config file are relative to the file's directory, not
+/// to whatever directory the MCP client happened to start the server from.
+fn relative_to(base: &Path, value: String) -> PathBuf {
+    let p = PathBuf::from(value);
+    if p.is_absolute() { p } else { base.join(p) }
+}
+
 impl Config {
     pub fn load(
         config_path: Option<PathBuf>,
@@ -31,42 +38,75 @@ impl Config {
         vfp_timeout_cli: Option<u64>,
     ) -> Result<Self> {
         let mut workspace =
-            workspace_cli.or_else(|| env::var("FOXPRO_WORKSPACE").ok().map(PathBuf::from));
+            workspace_cli.or_else(|| env::var_os("FOXPRO_WORKSPACE").map(PathBuf::from));
         let mut log_level = log_level_cli.or_else(|| env::var("FOXPRO_LOG_LEVEL").ok());
-        let mut vfp_path = vfp_path_cli.or_else(|| env::var("FOXPRO_PATH").ok().map(PathBuf::from));
-        let mut vfp_timeout = vfp_timeout_cli
-            .or_else(|| env::var("FOXPRO_TIMEOUT").ok().and_then(|s| s.parse().ok()));
+        let mut vfp_path = vfp_path_cli.or_else(|| env::var_os("FOXPRO_PATH").map(PathBuf::from));
+        let mut vfp_timeout = match vfp_timeout_cli {
+            Some(t) => Some(t),
+            None => match env::var("FOXPRO_TIMEOUT") {
+                Ok(s) => Some(s.trim().parse().map_err(|_| {
+                    FoxProError::Config(format!("FOXPRO_TIMEOUT is not a number: {s}"))
+                })?),
+                Err(_) => None,
+            },
+        };
 
-        let file_path = config_path
-            .or_else(|| env::var("FOXPRO_CONFIG").ok().map(PathBuf::from))
-            .or_else(|| Some(PathBuf::from("foxpro-mcp.json")))
-            .filter(|p| p.exists());
+        // An explicitly requested config file must exist; the default one is optional.
+        let explicit = config_path.or_else(|| env::var_os("FOXPRO_CONFIG").map(PathBuf::from));
+        let file_path = match explicit {
+            Some(p) if !p.is_file() => {
+                return Err(FoxProError::Config(format!(
+                    "config file not found: {}",
+                    p.display()
+                )));
+            }
+            Some(p) => Some(p),
+            None => Some(PathBuf::from("foxpro-mcp.json")).filter(|p| p.is_file()),
+        };
 
         if let Some(path) = file_path {
             let contents = fs::read_to_string(&path)?;
-            let file: ConfigFile = serde_json::from_str(&contents)?;
+            let file: ConfigFile = serde_json::from_str(&contents).map_err(|e| {
+                FoxProError::Config(format!("invalid config file {}: {e}", path.display()))
+            })?;
+            let base = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
             if workspace.is_none() {
-                workspace = file.workspace.map(PathBuf::from);
+                workspace = file.workspace.map(|w| relative_to(&base, w));
             }
             if log_level.is_none() {
                 log_level = file.log_level;
             }
             if vfp_path.is_none() {
-                vfp_path = file.vfp_path.map(PathBuf::from);
+                vfp_path = file.vfp_path.map(|v| {
+                    // Bare executable names ("vfp9") are looked up on PATH later.
+                    if v.contains('/') || v.contains('\\') {
+                        relative_to(&base, v)
+                    } else {
+                        PathBuf::from(v)
+                    }
+                });
             }
             if vfp_timeout.is_none() {
                 vfp_timeout = file.vfp_timeout;
             }
         }
 
-        let workspace =
-            workspace.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        if !workspace.exists() {
+        let workspace = match workspace {
+            Some(w) => w,
+            None => env::current_dir()?,
+        };
+        if !workspace.is_dir() {
             return Err(FoxProError::WorkspaceNotFound(workspace));
         }
         let workspace = Sandbox::canonicalize(&workspace)?;
         let log_level = log_level.unwrap_or_else(|| "info".to_string());
-        let vfp_timeout = vfp_timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let vfp_timeout = vfp_timeout
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .clamp(1, MAX_TIMEOUT_SECS);
 
         Ok(Config {
             workspace,
@@ -103,7 +143,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.workspace, Sandbox::canonicalize(&ws).unwrap());
         assert_eq!(cfg.log_level, "warn");
-        assert_eq!(cfg.vfp_timeout, 30);
+        assert_eq!(cfg.vfp_timeout, DEFAULT_TIMEOUT_SECS);
     }
 
     #[test]
@@ -111,5 +151,38 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let cfg = Config::load(None, Some(dir.path().to_path_buf()), None, None, None).unwrap();
         assert_eq!(cfg.log_level, "info");
+    }
+
+    #[test]
+    fn workspace_in_config_is_relative_to_config_file() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("project")).unwrap();
+        let config_path = dir.path().join("foxpro-mcp.json");
+        fs::write(
+            &config_path,
+            r#"{ "workspace": "project", "vfp_timeout": 0 }"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(config_path), None, None, None, None).unwrap();
+        assert_eq!(
+            cfg.workspace,
+            Sandbox::canonicalize(&dir.path().join("project")).unwrap()
+        );
+        assert_eq!(cfg.vfp_timeout, 1);
+    }
+
+    #[test]
+    fn missing_explicit_config_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let err = Config::load(
+            Some(dir.path().join("nope.json")),
+            Some(dir.path().to_path_buf()),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, FoxProError::Config(_)));
     }
 }
