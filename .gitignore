@@ -1,6 +1,7 @@
 # Node Modules & Build Outputs
 target/
 node_modules/
+vendor/
 dist
 build/
 coverage/

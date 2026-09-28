@@ -1,0 +1,35 @@
+{
+  "name": "foxpro-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Visual FoxPro 9 — no Rust or Python required",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Panudetingai/Foxpro-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Panudetingai/Foxpro-mcp/issues"
+  },
+  "homepage": "https://github.com/Panudetingai/Foxpro-mcp#readme",
+  "keywords": [
+    "mcp",
+    "foxpro",
+    "visual-foxpro",
+    "vfp",
+    "model-context-protocol"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "foxpro-mcp": "bin/foxpro-mcp.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  }
+}

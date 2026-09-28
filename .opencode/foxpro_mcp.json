@@ -1,0 +1,6 @@
+{
+    "workspace": ".",
+    "vfp_path": "C:/Program Files (x86)/Microsoft Visual FoxPro 9/vfp9.exe",
+    "vfp_timeout": 60,
+    "log_level": "info"
+  }
